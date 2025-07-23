@@ -5,6 +5,7 @@ project(imnodes)
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
+include(FetchContent)
 
 # determine whether this is a standalone project or included by other projects
 if (NOT DEFINED IMNODES_STANDALONE_PROJECT)
@@ -20,8 +21,33 @@ option(IMNODES_EXAMPLES "Build examples" ${IMNODES_STANDALONE_PROJECT})
 
 # allow custom imgui target name since this can vary because imgui doesn't natively include a CMakeLists.txt
 if(NOT DEFINED IMNODES_IMGUI_TARGET_NAME)
-    find_package(imgui CONFIG REQUIRED)
-    set(IMNODES_IMGUI_TARGET_NAME imgui::imgui)
+    set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/lib/imgui)
+    FetchContent_Declare(
+            imgui
+            GIT_REPOSITORY https://github.com/ocornut/imgui.git
+            GIT_TAG 44aa9a4b3a6f27d09a4eb5770d095cbd376dfc4b
+            SOURCE_DIR ${IMGUI_DIR}
+    )
+    FetchContent_MakeAvailable(imgui)
+
+    add_library(imgui STATIC
+            ${IMGUI_DIR}/imgui_demo.cpp
+            ${IMGUI_DIR}/imgui_draw.cpp
+            ${IMGUI_DIR}/imgui_tables.cpp
+            ${IMGUI_DIR}/imgui_widgets.cpp
+            ${IMGUI_DIR}/imgui.cpp
+            ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
+            ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
+    )
+
+    target_include_directories(imgui
+            PUBLIC
+            $<BUILD_INTERFACE:${IMGUI_DIR}>
+            $<BUILD_INTERFACE:${IMGUI_DIR}/backends>
+            $<INSTALL_INTERFACE:include/imgui>
+    )
+
+    set(IMNODES_IMGUI_TARGET_NAME imgui)
 endif()
 
 
