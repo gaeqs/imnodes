@@ -8,6 +8,8 @@
 
 #include "imnodes_internal.h"
 
+#include <iostream>
+
 // Check minimum ImGui version
 #define MINIMUM_COMPATIBLE_IMGUI_VERSION 17400
 #if IMGUI_VERSION_NUM < MINIMUM_COMPATIBLE_IMGUI_VERSION
@@ -542,23 +544,7 @@ void DrawListSortChannelsByDepth(const ImVector<int>& node_idx_depth_order)
 
 // [SECTION] ui state logic
 
-ImVec2 GetScreenSpacePinCoordinates(
-    const ImRect&              node_rect,
-    const ImRect&              attribute_rect,
-    const ImNodesAttributeType type)
-{
-    IM_ASSERT(type == ImNodesAttributeType_Input || type == ImNodesAttributeType_Output);
-    const float x = type == ImNodesAttributeType_Input
-                        ? (node_rect.Min.x - GImNodes->Style.PinOffset)
-                        : (node_rect.Max.x + GImNodes->Style.PinOffset);
-    return ImVec2(x, 0.5f * (attribute_rect.Min.y + attribute_rect.Max.y));
-}
-
-ImVec2 GetScreenSpacePinCoordinates(const ImNodesEditorContext& editor, const ImPinData& pin)
-{
-    const ImRect& parent_node_rect = editor.Nodes.Pool[pin.ParentNodeIdx].Rect;
-    return GetScreenSpacePinCoordinates(parent_node_rect, pin.AttributeRect, pin.Type);
-}
+ImVec2 GetScreenSpacePinCoordinates(const ImPinData& pin) { return pin.Pos; }
 
 bool MouseInCanvas()
 {
@@ -785,13 +771,9 @@ void BoxSelectorUpdateSelection(ImNodesEditorContext& editor, ImRect box_rect)
 
             const ImPinData& pin_start = editor.Pins.Pool[link.StartPinIdx];
             const ImPinData& pin_end = editor.Pins.Pool[link.EndPinIdx];
-            const ImRect&    node_start_rect = editor.Nodes.Pool[pin_start.ParentNodeIdx].Rect;
-            const ImRect&    node_end_rect = editor.Nodes.Pool[pin_end.ParentNodeIdx].Rect;
 
-            const ImVec2 start = GetScreenSpacePinCoordinates(
-                node_start_rect, pin_start.AttributeRect, pin_start.Type);
-            const ImVec2 end =
-                GetScreenSpacePinCoordinates(node_end_rect, pin_end.AttributeRect, pin_end.Type);
+            const ImVec2 start = GetScreenSpacePinCoordinates(pin_start);
+            const ImVec2 end = GetScreenSpacePinCoordinates(pin_end);
 
             // Test
             if (RectangleOverlapsLink(box_rect, start, end, pin_start.Type))
@@ -1029,13 +1011,13 @@ void ClickInteractionUpdate(ImNodesEditorContext& editor)
                 editor.ClickInteraction.LinkCreation.EndPinIdx.Value());
         }
 
-        const ImVec2 start_pos = GetScreenSpacePinCoordinates(editor, start_pin);
+        const ImVec2 start_pos = GetScreenSpacePinCoordinates(start_pin);
         // If we are within the hover radius of a receiving pin, snap the link
         // endpoint to it
-        const ImVec2 end_pos = should_snap
-                                   ? GetScreenSpacePinCoordinates(
-                                         editor, editor.Pins.Pool[GImNodes->HoveredPinIdx.Value()])
-                                   : GImNodes->MousePos;
+        const ImVec2 end_pos =
+            should_snap
+                ? GetScreenSpacePinCoordinates(editor.Pins.Pool[GImNodes->HoveredPinIdx.Value()])
+                : GImNodes->MousePos;
 
         const CubicBezier cubic_bezier = GetCubicBezier(
             start_pos, end_pos, start_pin.Type, GImNodes->Style.LinkLineSegmentsPerLength);
@@ -1355,14 +1337,12 @@ struct QuadOffsets
 
 QuadOffsets CalculateQuadOffsets(const float side_length)
 {
-    const float half_side = 0.5f * side_length;
-
     QuadOffsets offset;
 
-    offset.TopLeft = ImVec2(-half_side, half_side);
-    offset.BottomLeft = ImVec2(-half_side, -half_side);
-    offset.BottomRight = ImVec2(half_side, -half_side);
-    offset.TopRight = ImVec2(half_side, half_side);
+    offset.TopLeft = ImVec2(0, side_length);
+    offset.BottomLeft = ImVec2(0, 0);
+    offset.BottomRight = ImVec2(side_length, 0);
+    offset.TopRight = ImVec2(side_length, side_length);
 
     return offset;
 }
@@ -1384,19 +1364,62 @@ TriangleOffsets CalculateTriangleOffsets(const float side_length)
     // The length from the base to the midpoint is (1 / 3) * h. The length from
     // the midpoint to the triangle vertex is (2 / 3) * h.
     const float sqrt_3 = sqrtf(3.0f);
-    const float left_offset = -0.1666666666667f * sqrt_3 * side_length;
-    const float right_offset = 0.333333333333f * sqrt_3 * side_length;
-    const float vertical_offset = 0.5f * side_length;
+    const float right_offset = 0.5f * sqrt_3 * side_length;
 
     TriangleOffsets offset;
-    offset.TopLeft = ImVec2(left_offset, vertical_offset);
-    offset.BottomLeft = ImVec2(left_offset, -vertical_offset);
-    offset.Right = ImVec2(right_offset, 0.f);
+    offset.TopLeft = ImVec2(0, 0);
+    offset.BottomLeft = ImVec2(0, side_length);
+    offset.Right = ImVec2(right_offset, side_length * 0.5f);
 
     return offset;
 }
 
-void DrawPinShape(const ImVec2& pin_pos, const ImPinData& pin, const ImU32 pin_color)
+ImVec2 GetPinShapeSize(const ImPinData& pin)
+{
+    switch (pin.Shape)
+    {
+    case ImNodesPinShape_Circle:
+    {
+        float r = GImNodes->Style.PinCircleRadius;
+        return ImVec2(r * 2, r * 2);
+    }
+    case ImNodesPinShape_CircleFilled:
+    {
+        float r = GImNodes->Style.PinCircleRadius;
+        return ImVec2(r * 2, r * 2);
+    }
+    case ImNodesPinShape_Quad:
+    {
+        return ImVec2(GImNodes->Style.PinQuadSideLength, GImNodes->Style.PinQuadSideLength);
+    }
+    case ImNodesPinShape_QuadFilled:
+    {
+        return ImVec2(GImNodes->Style.PinQuadSideLength, GImNodes->Style.PinQuadSideLength);
+    }
+    break;
+    case ImNodesPinShape_Triangle:
+    {
+        const TriangleOffsets offset =
+            CalculateTriangleOffsets(GImNodes->Style.PinTriangleSideLength);
+        return ImVec2(offset.Right.x, GImNodes->Style.PinTriangleSideLength);
+    }
+    break;
+    case ImNodesPinShape_TriangleFilled:
+    {
+        const TriangleOffsets offset =
+            CalculateTriangleOffsets(GImNodes->Style.PinTriangleSideLength);
+        return ImVec2(offset.Right.x, GImNodes->Style.PinTriangleSideLength);
+    }
+    break;
+    default:
+        IM_ASSERT(!"Invalid PinShape value!");
+        break;
+    }
+
+    return {0, 0};
+}
+
+ImVec2 DrawPinShape(const ImVec2& pin_pos, const ImPinData& pin, const ImU32 pin_color)
 {
     static const int CIRCLE_NUM_SEGMENTS = 8;
 
@@ -1404,20 +1427,25 @@ void DrawPinShape(const ImVec2& pin_pos, const ImPinData& pin, const ImU32 pin_c
     {
     case ImNodesPinShape_Circle:
     {
+        float r = GImNodes->Style.PinCircleRadius;
         GImNodes->CanvasDrawList->AddCircle(
-            pin_pos,
+            pin_pos + ImVec2(r, r),
             GImNodes->Style.PinCircleRadius,
             pin_color,
             CIRCLE_NUM_SEGMENTS,
             GImNodes->Style.PinLineThickness);
+        return ImVec2(r * 2, r * 2);
     }
-    break;
     case ImNodesPinShape_CircleFilled:
     {
+        float r = GImNodes->Style.PinCircleRadius;
         GImNodes->CanvasDrawList->AddCircleFilled(
-            pin_pos, GImNodes->Style.PinCircleRadius, pin_color, CIRCLE_NUM_SEGMENTS);
+            pin_pos + ImVec2(r, r),
+            GImNodes->Style.PinCircleRadius,
+            pin_color,
+            CIRCLE_NUM_SEGMENTS);
+        return ImVec2(r * 2, r * 2);
     }
-    break;
     case ImNodesPinShape_Quad:
     {
         const QuadOffsets offset = CalculateQuadOffsets(GImNodes->Style.PinQuadSideLength);
@@ -1428,8 +1456,9 @@ void DrawPinShape(const ImVec2& pin_pos, const ImPinData& pin, const ImU32 pin_c
             pin_pos + offset.TopRight,
             pin_color,
             GImNodes->Style.PinLineThickness);
+
+        return ImVec2(GImNodes->Style.PinQuadSideLength, GImNodes->Style.PinQuadSideLength);
     }
-    break;
     case ImNodesPinShape_QuadFilled:
     {
         const QuadOffsets offset = CalculateQuadOffsets(GImNodes->Style.PinQuadSideLength);
@@ -1439,6 +1468,7 @@ void DrawPinShape(const ImVec2& pin_pos, const ImPinData& pin, const ImU32 pin_c
             pin_pos + offset.BottomRight,
             pin_pos + offset.TopRight,
             pin_color);
+        return ImVec2(GImNodes->Style.PinQuadSideLength, GImNodes->Style.PinQuadSideLength);
     }
     break;
     case ImNodesPinShape_Triangle:
@@ -1455,6 +1485,7 @@ void DrawPinShape(const ImVec2& pin_pos, const ImPinData& pin, const ImU32 pin_c
             // Multiplying the line thickness by two seemed to solve the
             // problem at a few different thickness values.
             2.f * GImNodes->Style.PinLineThickness);
+        return ImVec2(offset.Right.x, GImNodes->Style.PinTriangleSideLength);
     }
     break;
     case ImNodesPinShape_TriangleFilled:
@@ -1466,20 +1497,20 @@ void DrawPinShape(const ImVec2& pin_pos, const ImPinData& pin, const ImU32 pin_c
             pin_pos + offset.BottomLeft,
             pin_pos + offset.Right,
             pin_color);
+        return ImVec2(offset.Right.x, GImNodes->Style.PinTriangleSideLength);
     }
     break;
     default:
         IM_ASSERT(!"Invalid PinShape value!");
         break;
     }
+
+    return {0, 0};
 }
 
 void DrawPin(ImNodesEditorContext& editor, const int pin_idx)
 {
-    ImPinData&    pin = editor.Pins.Pool[pin_idx];
-    const ImRect& parent_node_rect = editor.Nodes.Pool[pin.ParentNodeIdx].Rect;
-
-    pin.Pos = GetScreenSpacePinCoordinates(parent_node_rect, pin.AttributeRect, pin.Type);
+    ImPinData& pin = editor.Pins.Pool[pin_idx];
 
     ImU32 pin_color = pin.ColorStyle.Background;
 
@@ -1629,17 +1660,13 @@ void DrawLink(ImNodesEditorContext& editor, const int link_idx)
 
 void BeginPinAttribute(
     const int                  id,
+    std::string                name,
     const ImNodesAttributeType type,
     const ImNodesPinShape      shape,
     const int                  node_idx)
 {
     // Make sure to call BeginNode() before calling
     // BeginAttribute()
-    IM_ASSERT(GImNodes->CurrentScope == ImNodesScope_Node);
-    GImNodes->CurrentScope = ImNodesScope_Attribute;
-
-    ImGui::BeginGroup();
-    ImGui::PushID(id);
 
     ImNodesEditorContext& editor = EditorContextGet();
 
@@ -1655,26 +1682,10 @@ void BeginPinAttribute(
     pin.Flags = GImNodes->CurrentAttributeFlags;
     pin.ColorStyle.Background = GImNodes->Style.Colors[ImNodesCol_Pin];
     pin.ColorStyle.Hovered = GImNodes->Style.Colors[ImNodesCol_PinHovered];
-}
+    pin.AttributeRect = {ImGui::GetCursorPos(), ImGui::GetCursorPos()};
+    pin.Name = std::move(name);
 
-void EndPinAttribute()
-{
-    IM_ASSERT(GImNodes->CurrentScope == ImNodesScope_Attribute);
-    GImNodes->CurrentScope = ImNodesScope_Node;
-
-    ImGui::PopID();
-    ImGui::EndGroup();
-
-    if (ImGui::IsItemActive())
-    {
-        GImNodes->ActiveAttribute = true;
-        GImNodes->ActiveAttributeId = GImNodes->CurrentAttributeId;
-    }
-
-    ImNodesEditorContext& editor = EditorContextGet();
-    ImPinData&            pin = editor.Pins.Pool[GImNodes->CurrentPinIdx];
-    ImNodeData&           node = editor.Nodes.Pool[GImNodes->CurrentNodeIdx];
-    pin.AttributeRect = GetItemRect();
+    ImNodeData& node = editor.Nodes.Pool[GImNodes->CurrentNodeIdx];
     node.PinIndices.push_back(GImNodes->CurrentPinIdx);
 }
 
@@ -2482,6 +2493,10 @@ void BeginNode(const int node_id)
 
     ImGui::PushID(node.Id);
     ImGui::BeginGroup();
+
+    // This fixes a bug with EndGroup's invalid bounding box when there's no items inside the group.
+    ImGui::ItemAdd(
+        ImRect(ImGui::GetCursorPos(), ImGui::GetCursorPos()), ImGui::GetID("##node_dummy"));
 }
 
 void EndNode()
@@ -2521,6 +2536,8 @@ void BeginNodeTitleBar()
 {
     IM_ASSERT(GImNodes->CurrentScope == ImNodesScope_Node);
     ImGui::BeginGroup();
+    ImGui::ItemAdd(
+        ImRect(ImGui::GetCursorPos(), ImGui::GetCursorPos()), ImGui::GetID("##title_dummy"));
 }
 
 void EndNodeTitleBar()
@@ -2532,24 +2549,113 @@ void EndNodeTitleBar()
     ImNodeData&           node = editor.Nodes.Pool[GImNodes->CurrentNodeIdx];
     node.TitleBarContentRect = GetItemRect();
 
-    ImGui::ItemAdd(GetNodeTitleRect(node), ImGui::GetID("title_bar"));
-
     ImGui::SetCursorPos(GridSpaceToEditorSpace(editor, GetNodeContentOrigin(node)));
 }
 
-void BeginInputAttribute(const int id, const ImNodesPinShape shape)
+void SetupInputAttribute(const int id, std::string name, const ImNodesPinShape shape)
 {
-    BeginPinAttribute(id, ImNodesAttributeType_Input, shape, GImNodes->CurrentNodeIdx);
+    BeginPinAttribute(
+        id, std::move(name), ImNodesAttributeType_Input, shape, GImNodes->CurrentNodeIdx);
 }
 
-void EndInputAttribute() { EndPinAttribute(); }
-
-void BeginOutputAttribute(const int id, const ImNodesPinShape shape)
+void SetupOutputAttribute(const int id, std::string name, const ImNodesPinShape shape)
 {
-    BeginPinAttribute(id, ImNodesAttributeType_Output, shape, GImNodes->CurrentNodeIdx);
+    BeginPinAttribute(
+        id, std::move(name), ImNodesAttributeType_Output, shape, GImNodes->CurrentNodeIdx);
+}
+void DrawInputAttributes()
+{
+    ImGui::BeginGroup();
+
+    ImNodesEditorContext& editor = EditorContextGet();
+    ImNodeData&           node = editor.Nodes.Pool[GImNodes->CurrentNodeIdx];
+
+    for (int pinIndex : node.PinIndices)
+    {
+        ImPinData& pin = editor.Pins.Pool[pinIndex];
+
+        if (pin.Type != ImNodesAttributeType_Input)
+            continue;
+
+        ImGuiWindow* window = ImGui::GetCurrentWindowRead();
+
+        ImVec2 pos(
+            window->DC.CursorPos.x, window->DC.CursorPos.y + window->DC.CurrLineTextBaseOffset);
+
+        ImVec2 textSize = ImGui::CalcTextSize(pin.Name.c_str());
+        ImVec2 shapeSize = GetPinShapeSize(pin);
+
+        float center = std::max(textSize.y, shapeSize.y) / 2.0f;
+
+        ImVec2 shapePos = pos;
+        shapePos.y += center - shapeSize.y / 2.0f;
+
+        pin.Pos = shapePos;
+
+        ImGui::Dummy(shapeSize);
+        ImGui::SameLine();
+        ImGui::Text("%s", pin.Name.c_str());
+    }
+
+    ImGui::EndGroup();
 }
 
-void EndOutputAttribute() { EndPinAttribute(); }
+void DrawOutputAttributes()
+{
+    ImGui::BeginGroup();
+
+    ImNodesEditorContext& editor = EditorContextGet();
+    ImNodeData&           node = editor.Nodes.Pool[GImNodes->CurrentNodeIdx];
+
+    float maxTextWidth = 0.0f;
+
+    // Compute max width.
+    for (int pinIndex : node.PinIndices)
+    {
+        ImPinData& pin = editor.Pins.Pool[pinIndex];
+
+        if (pin.Type != ImNodesAttributeType_Output)
+            continue;
+
+        maxTextWidth = std::max(maxTextWidth, ImGui::CalcTextSize(pin.Name.c_str()).x);
+    }
+
+    for (int pinIndex : node.PinIndices)
+    {
+        ImPinData& pin = editor.Pins.Pool[pinIndex];
+
+        if (pin.Type != ImNodesAttributeType_Output)
+            continue;
+
+        ImGuiWindow* window = ImGui::GetCurrentWindowRead();
+
+        ImVec2 pos(
+            window->DC.CursorPos.x, window->DC.CursorPos.y + window->DC.CurrLineTextBaseOffset);
+
+        ImVec2 textSize = ImGui::CalcTextSize(pin.Name.c_str());
+        ImVec2 shapeSize = GetPinShapeSize(pin);
+
+        float center = std::max(textSize.y, shapeSize.y) / 2.0f;
+
+        ImVec2 shapePos = pos;
+        shapePos.y += center - shapeSize.y / 2.0f;
+        shapePos.x += maxTextWidth + ImGui::GetStyle().ItemSpacing.x;
+
+        ImVec2 textPos = pos;
+        textPos.x += maxTextWidth - textSize.x;
+        textPos.y += center - textSize.y / 2.0f;
+
+        pin.Pos = shapePos;
+        window->DC.CursorPos = textPos;
+        window->DC.IsSetPos = true;
+
+        ImGui::Text("%s", pin.Name.c_str());
+        ImGui::SameLine();
+        ImGui::Dummy(shapeSize);
+    }
+
+    ImGui::EndGroup();
+}
 
 void BeginStaticAttribute(const int id)
 {
