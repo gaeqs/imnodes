@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 #include <imgui.h>
+#include <string>
 
 #ifdef IMNODES_USER_CONFIG
 #include IMNODES_USER_CONFIG
@@ -284,7 +285,7 @@ void MiniMap(
 
 // Editor zoom controls
 float EditorContextGetZoom();
-void EditorContextSetZoom(float zoom_scale, ImVec2 zoom_center);
+void  EditorContextSetZoom(float zoom_scale, ImVec2 zoom_center);
 
 // Convert to/from node editor imgui context screen space
 ImVec2 ConvertToEditorContextSpace(const ImVec2& screen_space_pos);
@@ -319,11 +320,20 @@ void EndNodeTitleBar();
 // Each attribute id must be unique.
 
 // Create an input attribute block. The pin is rendered on left side.
-void BeginInputAttribute(int id, ImNodesPinShape shape = ImNodesPinShape_CircleFilled);
-void EndInputAttribute();
+void SetupInputAttribute(
+    int             id,
+    std::string     name,
+    ImNodesPinShape shape = ImNodesPinShape_CircleFilled);
+
 // Create an output attribute block. The pin is rendered on the right side.
-void BeginOutputAttribute(int id, ImNodesPinShape shape = ImNodesPinShape_CircleFilled);
-void EndOutputAttribute();
+void SetupOutputAttribute(
+    int             id,
+    std::string     name,
+    ImNodesPinShape shape = ImNodesPinShape_CircleFilled);
+
+void DrawInputAttributes();
+void DrawOutputAttributes();
+
 // Create a static attribute block. A static attribute has no pin, and therefore can't be linked to
 // anything. However, you can still use IsAttributeActive() and IsAnyAttributeActive() to check for
 // attribute activity.
