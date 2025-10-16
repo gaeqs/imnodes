@@ -8,6 +8,7 @@
 
 #include <assert.h>
 #include <limits.h>
+#include <string>
 
 // the structure of this file:
 //
@@ -171,6 +172,7 @@ struct ImPinData
     ImNodesPinShape      Shape;
     ImVec2               Pos; // screen-space coordinates
     int                  Flags;
+    std::string          Name;
 
     struct
     {
