@@ -170,6 +170,7 @@ struct ImPinData
     ImNodesAttributeType Type;
     ImNodesPinShape      Shape;
     ImVec2               Pos; // screen-space coordinates
+    ImVec2               ShapeSize;
     int                  Flags;
     std::string          Name;
 
@@ -184,6 +185,8 @@ struct ImPinData
           ColorStyle()
     {
     }
+
+    ImVec2 GetCenter() const { return Pos + ShapeSize / 2.0f; }
 };
 
 struct ImLinkData
@@ -267,7 +270,7 @@ struct ImNodesEditorContext
     // Relative origins of selected nodes for snapping of dragged nodes
     ImVector<ImVec2> SelectedNodeOffsets;
     // Offset of the primary node origin relative to the mouse cursor.
-    ImVec2           PrimaryNodeOffset;
+    ImVec2 PrimaryNodeOffset;
 
     ImClickInteractionState ClickInteraction;
 
@@ -287,9 +290,10 @@ struct ImNodesEditorContext
 
     ImNodesEditorContext()
         : Nodes(), Pins(), Links(), ZoomScale(1.f), Panning(0.f, 0.f), SelectedNodeIndices(),
-           SelectedLinkIndices(), SelectedNodeOffsets(), PrimaryNodeOffset(0.f, 0.f), ClickInteraction(),
-          MiniMapEnabled(false), MiniMapSizeFraction(0.0f), MiniMapNodeHoveringCallback(NULL),
-          MiniMapNodeHoveringCallbackUserData(NULL), MiniMapScaling(0.0f)
+          SelectedLinkIndices(), SelectedNodeOffsets(), PrimaryNodeOffset(0.f, 0.f),
+          ClickInteraction(), MiniMapEnabled(false), MiniMapSizeFraction(0.0f),
+          MiniMapNodeHoveringCallback(NULL), MiniMapNodeHoveringCallbackUserData(NULL),
+          MiniMapScaling(0.0f)
     {
     }
 };
@@ -349,7 +353,7 @@ struct ImNodesContext
     // ImGui::IO cache
 
     ImVec2 MousePos;
-    bool IsHovered;
+    bool   IsHovered;
 
     bool  LeftMouseClicked;
     bool  LeftMouseReleased;

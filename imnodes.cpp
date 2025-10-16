@@ -542,7 +542,7 @@ void DrawListSortChannelsByDepth(const ImVector<int>& node_idx_depth_order)
 
 // [SECTION] ui state logic
 
-ImVec2 GetScreenSpacePinCoordinates(const ImPinData& pin) { return pin.Pos; }
+ImVec2 GetScreenSpacePinCoordinates(const ImPinData& pin) { return pin.GetCenter(); }
 
 bool MouseInCanvas() { return GImNodes->IsHovered; }
 
@@ -654,8 +654,8 @@ void BeginLinkInteraction(
         const ImPinData&  start_pin = editor.Pins.Pool[link.StartPinIdx];
         const ImPinData&  end_pin = editor.Pins.Pool[link.EndPinIdx];
         const ImVec2&     mouse_pos = GImNodes->MousePos;
-        const float       dist_to_start = ImLengthSqr(start_pin.Pos - mouse_pos);
-        const float       dist_to_end = ImLengthSqr(end_pin.Pos - mouse_pos);
+        const float       dist_to_start = ImLengthSqr(start_pin.GetCenter() - mouse_pos);
+        const float       dist_to_end = ImLengthSqr(end_pin.GetCenter() - mouse_pos);
         const int closest_pin_idx = dist_to_start < dist_to_end ? link.StartPinIdx : link.EndPinIdx;
 
         editor.ClickInteraction.Type = ImNodesClickInteractionType_LinkCreation;
@@ -1117,7 +1117,7 @@ void ResolveOccludedPins(const ImNodesEditorContext& editor, ImVector<int>& occl
             for (int idx = 0; idx < node_below.PinIndices.Size; ++idx)
             {
                 const int     pin_idx = node_below.PinIndices[idx];
-                const ImVec2& pin_pos = editor.Pins.Pool[pin_idx].Pos;
+                const ImVec2& pin_pos = editor.Pins.Pool[pin_idx].GetCenter();
 
                 if (rect_above.Contains(pin_pos))
                 {
@@ -1149,7 +1149,7 @@ ImOptionalIndex ResolveHoveredPin(
             continue;
         }
 
-        const ImVec2& pin_pos = pins.Pool[idx].Pos;
+        const ImVec2& pin_pos = pins.Pool[idx].GetCenter();
         const float   distance_sqr = ImLengthSqr(pin_pos - GImNodes->MousePos);
 
         // TODO: GImNodes->Style.PinHoverRadius needs to be copied into pin data and the pin-local
@@ -1239,7 +1239,10 @@ ImOptionalIndex ResolveHoveredLink(
         // rendering the links
 
         const CubicBezier cubic_bezier = GetCubicBezier(
-            start_pin.Pos, end_pin.Pos, start_pin.Type, GImNodes->Style.LinkLineSegmentsPerLength);
+            start_pin.GetCenter(),
+            end_pin.GetCenter(),
+            start_pin.Type,
+            GImNodes->Style.LinkLineSegmentsPerLength);
 
         // The distance test
         {
@@ -1642,7 +1645,10 @@ void DrawLink(ImNodesEditorContext& editor, const int link_idx)
     const ImPinData&  end_pin = editor.Pins.Pool[link.EndPinIdx];
 
     const CubicBezier cubic_bezier = GetCubicBezier(
-        start_pin.Pos, end_pin.Pos, start_pin.Type, GImNodes->Style.LinkLineSegmentsPerLength);
+        start_pin.GetCenter(),
+        end_pin.GetCenter(),
+        start_pin.Type,
+        GImNodes->Style.LinkLineSegmentsPerLength);
 
     const bool link_hovered =
         GImNodes->HoveredLinkIdx == link_idx &&
@@ -1878,8 +1884,8 @@ static void MiniMapDrawLink(ImNodesEditorContext& editor, const int link_idx)
     const ImPinData&  end_pin = editor.Pins.Pool[link.EndPinIdx];
 
     const CubicBezier cubic_bezier = GetCubicBezier(
-        ScreenSpaceToMiniMapSpace(editor, start_pin.Pos),
-        ScreenSpaceToMiniMapSpace(editor, end_pin.Pos),
+        ScreenSpaceToMiniMapSpace(editor, start_pin.GetCenter()),
+        ScreenSpaceToMiniMapSpace(editor, end_pin.GetCenter()),
         start_pin.Type,
         GImNodes->Style.LinkLineSegmentsPerLength / editor.MiniMapScaling);
 
@@ -2049,9 +2055,9 @@ ImNodesIO::ImNodesIO()
 
 ImNodesStyle::ImNodesStyle()
     : GridSpacing(24.f), NodeCornerRounding(4.f), NodePadding(8.f, 8.f), NodeBorderThickness(1.f),
-      LinkThickness(3.f), LinkLineSegmentsPerLength(0.1f), LinkHoverDistance(10.f),
-      PinCircleRadius(4.f), PinQuadSideLength(7.f), PinTriangleSideLength(9.5),
-      PinLineThickness(1.f), PinHoverRadius(10.f), PinOffset(0.f), MiniMapPadding(8.0f, 8.0f),
+      LinkThickness(3.f), LinkLineSegmentsPerLength(0.1f), LinkHoverDistance(10.0f),
+      PinCircleRadius(20.0f), PinQuadSideLength(20.f), PinTriangleSideLength(20.0f),
+      PinLineThickness(1.f), PinHoverRadius(20.0f), PinOffset(0.f), MiniMapPadding(8.0f, 8.0f),
       MiniMapOffset(4.0f, 4.0f), Flags(ImNodesStyleFlags_NodeOutline | ImNodesStyleFlags_GridLines),
       Colors()
 {
@@ -2658,7 +2664,7 @@ ImVec2 GetNodeDimensions(int node_id)
     return node.Rect.GetSize();
 }
 
-    void BeginNodeTitleBar()
+void BeginNodeTitleBar()
 {
     IM_ASSERT(GImNodes->CurrentScope == ImNodesScope_Node);
     ImGui::BeginGroup();
@@ -2677,7 +2683,6 @@ void EndNodeTitleBar()
 
     ImGui::SetCursorPos(GridSpaceToEditorSpace(editor, GetNodeContentOrigin(node)));
 }
-
 
 void SetupInputAttribute(const int id, std::string name, const ImNodesPinShape shape)
 {
@@ -2706,8 +2711,7 @@ void DrawInputAttributes()
 
         ImGuiWindow* window = ImGui::GetCurrentWindowRead();
 
-        ImVec2 pos(
-            window->DC.CursorPos.x, window->DC.CursorPos.y + window->DC.CurrLineTextBaseOffset);
+        ImVec2 pos = window->DC.CursorPos;
 
         ImVec2 textSize = ImGui::CalcTextSize(pin.Name.c_str());
         ImVec2 shapeSize = GetPinShapeSize(pin);
@@ -2718,9 +2722,13 @@ void DrawInputAttributes()
         shapePos.y += center - shapeSize.y / 2.0f;
 
         pin.Pos = shapePos;
+        pin.ShapeSize = shapeSize;
 
-        ImGui::Dummy(shapeSize);
+        ImGui::Dummy(ImVec2(shapeSize.x, center * 2 + ImGui::GetStyle().ItemSpacing.y));
         ImGui::SameLine();
+
+        window->DC.CursorPos.y = pos.y + center - textSize.y / 2.0f;
+
         ImGui::Text("%s", pin.Name.c_str());
     }
 
@@ -2747,6 +2755,13 @@ void DrawOutputAttributes()
         maxTextWidth = std::max(maxTextWidth, ImGui::CalcTextSize(pin.Name.c_str()).x);
     }
 
+    ImGuiWindow* window = ImGui::GetCurrentWindowRead();
+
+    float nodeOriginX = GridSpaceToScreenSpace(editor, node.Origin).x;
+    float currentWidth = window->DC.CursorPos.x - nodeOriginX;
+    float titleWidth = node.TitleBarContentRect.GetWidth() - maxTextWidth;
+    float originX = nodeOriginX + std::max(currentWidth, titleWidth);
+
     for (int pinIndex : node.PinIndices)
     {
         ImPinData& pin = editor.Pins.Pool[pinIndex];
@@ -2754,10 +2769,8 @@ void DrawOutputAttributes()
         if (pin.Type != ImNodesAttributeType_Output)
             continue;
 
-        ImGuiWindow* window = ImGui::GetCurrentWindowRead();
-
-        ImVec2 pos(
-            window->DC.CursorPos.x, window->DC.CursorPos.y + window->DC.CurrLineTextBaseOffset);
+        ImVec2 pos = window->DC.CursorPos;
+        pos.x = originX;
 
         ImVec2 textSize = ImGui::CalcTextSize(pin.Name.c_str());
         ImVec2 shapeSize = GetPinShapeSize(pin);
@@ -2773,12 +2786,14 @@ void DrawOutputAttributes()
         textPos.y += center - textSize.y / 2.0f;
 
         pin.Pos = shapePos;
+        pin.ShapeSize = shapeSize;
+
         window->DC.CursorPos = textPos;
         window->DC.IsSetPos = true;
 
         ImGui::Text("%s", pin.Name.c_str());
         ImGui::SameLine();
-        ImGui::Dummy(shapeSize);
+        ImGui::Dummy(ImVec2(shapeSize.x, center * 2 + ImGui::GetStyle().ItemSpacing.y));
     }
 
     ImGui::EndGroup();
