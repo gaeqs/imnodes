@@ -1362,6 +1362,502 @@ inline void AppendDrawData(ImDrawList* src, ImVec2 origin, float scale)
     dl->_IdxWritePtr = dl->IdxBuffer.Data + dl->IdxBuffer.size();
 }
 
+#define IM_NORMALIZE2F_OVER_ZERO(VX, VY)                                                           \
+    {                                                                                              \
+        float d2 = VX * VX + VY * VY;                                                              \
+        if (d2 > 0.0f)                                                                             \
+        {                                                                                          \
+            float inv_len = ImRsqrt(d2);                                                           \
+            VX *= inv_len;                                                                         \
+            VY *= inv_len;                                                                         \
+        }                                                                                          \
+    }                                                                                              \
+    (void)0
+#define IM_FIXNORMAL2F_MAX_INVLEN2 100.0f // 500.0f (see #4053, #3366)
+#define IM_FIXNORMAL2F(VX, VY)                                                                     \
+    {                                                                                              \
+        float d2 = VX * VX + VY * VY;                                                              \
+        if (d2 > 0.000001f)                                                                        \
+        {                                                                                          \
+            float inv_len2 = 1.0f / d2;                                                            \
+            if (inv_len2 > IM_FIXNORMAL2F_MAX_INVLEN2)                                             \
+                inv_len2 = IM_FIXNORMAL2F_MAX_INVLEN2;                                             \
+            VX *= inv_len2;                                                                        \
+            VY *= inv_len2;                                                                        \
+        }                                                                                          \
+    }                                                                                              \
+    (void)0
+
+inline void PathStroke(
+    ImDrawList*     dl,
+    ImNodeRectColor rectColor,
+    ImVec2          min,
+    ImVec2          max,
+    ImDrawFlags     flags,
+    float           thickness)
+{
+    auto points = dl->_Path.Data;
+    auto points_count = dl->_Path.Size;
+    dl->_Path.Size = 0;
+
+    if (points_count < 2)
+        return;
+
+    const bool   closed = (flags & ImDrawFlags_Closed) != 0;
+    const ImVec2 opaque_uv = dl->_Data->TexUvWhitePixel;
+    const int    count =
+        closed ? points_count : points_count - 1; // The number of line segments we need to draw
+    const bool thick_line = (thickness > dl->_FringeScale);
+
+    if (dl->Flags & ImDrawListFlags_AntiAliasedLines)
+    {
+        // Anti-aliased stroke
+        const float AA_SIZE = dl->_FringeScale;
+
+        // Thicknesses <1.0 should behave like thickness 1.0
+        thickness = ImMax(thickness, 1.0f);
+        const int   integer_thickness = (int)thickness;
+        const float fractional_thickness = thickness - integer_thickness;
+
+        // Do we want to draw this line using a texture?
+        // - For now, only draw integer-width lines using textures to avoid issues with the way
+        // scaling occurs, could be improved.
+        // - If AA_SIZE is not 1.0f we cannot use the texture path.
+        const bool use_texture = (dl->Flags & ImDrawListFlags_AntiAliasedLinesUseTex) &&
+                                 (integer_thickness < IM_DRAWLIST_TEX_LINES_WIDTH_MAX) &&
+                                 (fractional_thickness <= 0.00001f) && (AA_SIZE == 1.0f);
+
+        // We should never hit this, because NewFrame() doesn't set
+        // ImDrawListFlags_AntiAliasedLinesUseTex unless ImFontAtlasFlags_NoBakedLines is off
+        IM_ASSERT_PARANOID(
+            !use_texture || !(_Data->Font->ContainerAtlas->Flags & ImFontAtlasFlags_NoBakedLines));
+
+        const int idx_count = use_texture ? (count * 6) : (thick_line ? count * 18 : count * 12);
+        const int vtx_count =
+            use_texture ? (points_count * 2) : (thick_line ? points_count * 4 : points_count * 3);
+        dl->PrimReserve(idx_count, vtx_count);
+
+        // Temporary buffer
+        // The first <points_count> items are normals at each line point, then after that there are
+        // either 2 or 4 temp points for each line point
+        dl->_Data->TempBuffer.reserve_discard(
+            points_count * ((use_texture || !thick_line) ? 3 : 5));
+        ImVec2* temp_normals = dl->_Data->TempBuffer.Data;
+        ImVec2* temp_points = temp_normals + points_count;
+
+        // Calculate normals (tangents) for each line segment
+        for (int i1 = 0; i1 < count; i1++)
+        {
+            const int i2 = (i1 + 1) == points_count ? 0 : i1 + 1;
+            float     dx = points[i2].x - points[i1].x;
+            float     dy = points[i2].y - points[i1].y;
+            IM_NORMALIZE2F_OVER_ZERO(dx, dy);
+            temp_normals[i1].x = dy;
+            temp_normals[i1].y = -dx;
+        }
+        if (!closed)
+            temp_normals[points_count - 1] = temp_normals[points_count - 2];
+
+        // If we are drawing a one-pixel-wide line without a texture, or a textured line of any
+        // width, we only need 2 or 3 vertices per point
+        if (use_texture || !thick_line)
+        {
+            // [PATH 1] Texture-based lines (thick or non-thick)
+            // [PATH 2] Non texture-based lines (non-thick)
+
+            // The width of the geometry we need to draw - this is essentially <thickness> pixels
+            // for the line itself, plus "one pixel" for AA.
+            // - In the texture-based path, we don't use AA_SIZE here because the +1 is tied to the
+            // generated texture
+            //   (see ImFontAtlasBuildRenderLinesTexData() function), and so alternate values won't
+            //   work without changes to that code.
+            // - In the non texture-based paths, we would allow AA_SIZE to potentially be != 1.0f
+            // with a patch (e.g. fringe_scale patch to
+            //   allow scaling geometry while preserving one-screen-pixel AA fringe).
+            const float half_draw_size = use_texture ? ((thickness * 0.5f) + 1) : AA_SIZE;
+
+            // If line is not closed, the first and last points need to be generated differently as
+            // there are no normals to blend
+            if (!closed)
+            {
+                temp_points[0] = points[0] + temp_normals[0] * half_draw_size;
+                temp_points[1] = points[0] - temp_normals[0] * half_draw_size;
+                temp_points[(points_count - 1) * 2 + 0] =
+                    points[points_count - 1] + temp_normals[points_count - 1] * half_draw_size;
+                temp_points[(points_count - 1) * 2 + 1] =
+                    points[points_count - 1] - temp_normals[points_count - 1] * half_draw_size;
+            }
+
+            // Generate the indices to form a number of triangles for each line segment, and the
+            // vertices for the line edges This takes points n and n+1 and writes into n+1, with the
+            // first point in a closed line being generated from the final one (as n+1 wraps)
+            // FIXME-OPT: Merge the different loops, possibly remove the temporary buffer.
+            unsigned int idx1 = dl->_VtxCurrentIdx; // Vertex index for start of line segment
+            for (int i1 = 0; i1 < count; i1++)      // i1 is the first point of the line segment
+            {
+                const int          i2 = (i1 + 1) == points_count
+                                            ? 0
+                                            : i1 + 1; // i2 is the second point of the line segment
+                const unsigned int idx2 =
+                    ((i1 + 1) == points_count)
+                        ? dl->_VtxCurrentIdx
+                        : (idx1 + (use_texture ? 2 : 3)); // Vertex index for end of segment
+
+                // Average normals
+                float dm_x = (temp_normals[i1].x + temp_normals[i2].x) * 0.5f;
+                float dm_y = (temp_normals[i1].y + temp_normals[i2].y) * 0.5f;
+                IM_FIXNORMAL2F(dm_x, dm_y);
+                dm_x *= half_draw_size; // dm_x, dm_y are offset to the outer edge of the AA area
+                dm_y *= half_draw_size;
+
+                // Add temporary vertices for the outer edges
+                ImVec2* out_vtx = &temp_points[i2 * 2];
+                out_vtx[0].x = points[i2].x + dm_x;
+                out_vtx[0].y = points[i2].y + dm_y;
+                out_vtx[1].x = points[i2].x - dm_x;
+                out_vtx[1].y = points[i2].y - dm_y;
+
+                if (use_texture)
+                {
+                    // Add indices for two triangles
+                    dl->_IdxWritePtr[0] = (ImDrawIdx)(idx2 + 0);
+                    dl->_IdxWritePtr[1] = (ImDrawIdx)(idx1 + 0);
+                    dl->_IdxWritePtr[2] = (ImDrawIdx)(idx1 + 1); // Right tri
+                    dl->_IdxWritePtr[3] = (ImDrawIdx)(idx2 + 1);
+                    dl->_IdxWritePtr[4] = (ImDrawIdx)(idx1 + 1);
+                    dl->_IdxWritePtr[5] = (ImDrawIdx)(idx2 + 0); // Left tri
+                    dl->_IdxWritePtr += 6;
+                }
+                else
+                {
+                    // Add indexes for four triangles
+                    dl->_IdxWritePtr[0] = (ImDrawIdx)(idx2 + 0);
+                    dl->_IdxWritePtr[1] = (ImDrawIdx)(idx1 + 0);
+                    dl->_IdxWritePtr[2] = (ImDrawIdx)(idx1 + 2); // Right tri 1
+                    dl->_IdxWritePtr[3] = (ImDrawIdx)(idx1 + 2);
+                    dl->_IdxWritePtr[4] = (ImDrawIdx)(idx2 + 2);
+                    dl->_IdxWritePtr[5] = (ImDrawIdx)(idx2 + 0); // Right tri 2
+                    dl->_IdxWritePtr[6] = (ImDrawIdx)(idx2 + 1);
+                    dl->_IdxWritePtr[7] = (ImDrawIdx)(idx1 + 1);
+                    dl->_IdxWritePtr[8] = (ImDrawIdx)(idx1 + 0); // Left tri 1
+                    dl->_IdxWritePtr[9] = (ImDrawIdx)(idx1 + 0);
+                    dl->_IdxWritePtr[10] = (ImDrawIdx)(idx2 + 0);
+                    dl->_IdxWritePtr[11] = (ImDrawIdx)(idx2 + 1); // Left tri 2
+                    dl->_IdxWritePtr += 12;
+                }
+
+                idx1 = idx2;
+            }
+
+            // Add vertices for each point on the line
+            if (use_texture)
+            {
+                // If we're using textures we only need to emit the left/right edge vertices
+                ImVec4 tex_uvs = dl->_Data->TexUvLines[integer_thickness];
+                ImVec2 tex_uv0(tex_uvs.x, tex_uvs.y);
+                ImVec2 tex_uv1(tex_uvs.z, tex_uvs.w);
+                for (int i = 0; i < points_count; i++)
+                {
+                    dl->_VtxWritePtr[0].pos = temp_points[i * 2 + 0];
+                    dl->_VtxWritePtr[0].uv = tex_uv0;
+                    dl->_VtxWritePtr[0].col =
+                        rectColor.lerp(min, max, temp_points[i * 2]); // Left-side outer edge
+                    dl->_VtxWritePtr[1].pos = temp_points[i * 2 + 1];
+                    dl->_VtxWritePtr[1].uv = tex_uv1;
+                    dl->_VtxWritePtr[1].col =
+                        rectColor.lerp(min, max, temp_points[i * 2 + 1]); // Right-side outer edge
+                    dl->_VtxWritePtr += 2;
+                }
+            }
+            else
+            {
+                // If we're not using a texture, we need the center vertex as well
+                for (int i = 0; i < points_count; i++)
+                {
+                    ImU32       col0 = rectColor.lerp(min, max, points[i]);
+                    ImU32       col1 = rectColor.lerp(min, max, temp_points[i * 2]);
+                    ImU32       col2 = rectColor.lerp(min, max, temp_points[i * 2 + 1]);
+                    const ImU32 col_trans1 = col1 & ~IM_COL32_A_MASK;
+                    const ImU32 col_trans2 = col2 & ~IM_COL32_A_MASK;
+
+                    dl->_VtxWritePtr[0].pos = points[i];
+                    dl->_VtxWritePtr[0].uv = opaque_uv;
+                    dl->_VtxWritePtr[0].col = col0; // Center of line
+                    dl->_VtxWritePtr[1].pos = temp_points[i * 2 + 0];
+                    dl->_VtxWritePtr[1].uv = opaque_uv;
+                    dl->_VtxWritePtr[1].col = col_trans1; // Left-side outer edge
+                    dl->_VtxWritePtr[2].pos = temp_points[i * 2 + 1];
+                    dl->_VtxWritePtr[2].uv = opaque_uv;
+                    dl->_VtxWritePtr[2].col = col_trans2; // Right-side outer edge
+                    dl->_VtxWritePtr += 3;
+                }
+            }
+        }
+        else
+        {
+            // [PATH 2] Non texture-based lines (thick): we need to draw the solid line core and
+            // thus require four vertices per point
+            const float half_inner_thickness = (thickness - AA_SIZE) * 0.5f;
+
+            // If line is not closed, the first and last points need to be generated differently as
+            // there are no normals to blend
+            if (!closed)
+            {
+                const int points_last = points_count - 1;
+                temp_points[0] = points[0] + temp_normals[0] * (half_inner_thickness + AA_SIZE);
+                temp_points[1] = points[0] + temp_normals[0] * (half_inner_thickness);
+                temp_points[2] = points[0] - temp_normals[0] * (half_inner_thickness);
+                temp_points[3] = points[0] - temp_normals[0] * (half_inner_thickness + AA_SIZE);
+                temp_points[points_last * 4 + 0] =
+                    points[points_last] +
+                    temp_normals[points_last] * (half_inner_thickness + AA_SIZE);
+                temp_points[points_last * 4 + 1] =
+                    points[points_last] + temp_normals[points_last] * (half_inner_thickness);
+                temp_points[points_last * 4 + 2] =
+                    points[points_last] - temp_normals[points_last] * (half_inner_thickness);
+                temp_points[points_last * 4 + 3] =
+                    points[points_last] -
+                    temp_normals[points_last] * (half_inner_thickness + AA_SIZE);
+            }
+
+            // Generate the indices to form a number of triangles for each line segment, and the
+            // vertices for the line edges This takes points n and n+1 and writes into n+1, with the
+            // first point in a closed line being generated from the final one (as n+1 wraps)
+            // FIXME-OPT: Merge the different loops, possibly remove the temporary buffer.
+            unsigned int idx1 = dl->_VtxCurrentIdx; // Vertex index for start of line segment
+            for (int i1 = 0; i1 < count; i1++)      // i1 is the first point of the line segment
+            {
+                const int          i2 = (i1 + 1) == points_count
+                                            ? 0
+                                            : (i1 + 1); // i2 is the second point of the line segment
+                const unsigned int idx2 = (i1 + 1) == points_count
+                                              ? dl->_VtxCurrentIdx
+                                              : (idx1 + 4); // Vertex index for end of segment
+
+                // Average normals
+                float dm_x = (temp_normals[i1].x + temp_normals[i2].x) * 0.5f;
+                float dm_y = (temp_normals[i1].y + temp_normals[i2].y) * 0.5f;
+                IM_FIXNORMAL2F(dm_x, dm_y);
+                float dm_out_x = dm_x * (half_inner_thickness + AA_SIZE);
+                float dm_out_y = dm_y * (half_inner_thickness + AA_SIZE);
+                float dm_in_x = dm_x * half_inner_thickness;
+                float dm_in_y = dm_y * half_inner_thickness;
+
+                // Add temporary vertices
+                ImVec2* out_vtx = &temp_points[i2 * 4];
+                out_vtx[0].x = points[i2].x + dm_out_x;
+                out_vtx[0].y = points[i2].y + dm_out_y;
+                out_vtx[1].x = points[i2].x + dm_in_x;
+                out_vtx[1].y = points[i2].y + dm_in_y;
+                out_vtx[2].x = points[i2].x - dm_in_x;
+                out_vtx[2].y = points[i2].y - dm_in_y;
+                out_vtx[3].x = points[i2].x - dm_out_x;
+                out_vtx[3].y = points[i2].y - dm_out_y;
+
+                // Add indexes
+                dl->_IdxWritePtr[0] = (ImDrawIdx)(idx2 + 1);
+                dl->_IdxWritePtr[1] = (ImDrawIdx)(idx1 + 1);
+                dl->_IdxWritePtr[2] = (ImDrawIdx)(idx1 + 2);
+                dl->_IdxWritePtr[3] = (ImDrawIdx)(idx1 + 2);
+                dl->_IdxWritePtr[4] = (ImDrawIdx)(idx2 + 2);
+                dl->_IdxWritePtr[5] = (ImDrawIdx)(idx2 + 1);
+                dl->_IdxWritePtr[6] = (ImDrawIdx)(idx2 + 1);
+                dl->_IdxWritePtr[7] = (ImDrawIdx)(idx1 + 1);
+                dl->_IdxWritePtr[8] = (ImDrawIdx)(idx1 + 0);
+                dl->_IdxWritePtr[9] = (ImDrawIdx)(idx1 + 0);
+                dl->_IdxWritePtr[10] = (ImDrawIdx)(idx2 + 0);
+                dl->_IdxWritePtr[11] = (ImDrawIdx)(idx2 + 1);
+                dl->_IdxWritePtr[12] = (ImDrawIdx)(idx2 + 2);
+                dl->_IdxWritePtr[13] = (ImDrawIdx)(idx1 + 2);
+                dl->_IdxWritePtr[14] = (ImDrawIdx)(idx1 + 3);
+                dl->_IdxWritePtr[15] = (ImDrawIdx)(idx1 + 3);
+                dl->_IdxWritePtr[16] = (ImDrawIdx)(idx2 + 3);
+                dl->_IdxWritePtr[17] = (ImDrawIdx)(idx2 + 2);
+                dl->_IdxWritePtr += 18;
+
+                idx1 = idx2;
+            }
+
+            // Add vertices
+            for (int i = 0; i < points_count; i++)
+            {
+                ImU32       col0 = rectColor.lerp(min, max, temp_points[i * 4]);
+                ImU32       col1 = rectColor.lerp(min, max, temp_points[i * 4 + 1]);
+                ImU32       col2 = rectColor.lerp(min, max, temp_points[i * 4 + 2]);
+                ImU32       col3 = rectColor.lerp(min, max, temp_points[i * 4 + 3]);
+                const ImU32 col_trans0 = col0 & ~IM_COL32_A_MASK;
+                const ImU32 col_trans3 = col3 & ~IM_COL32_A_MASK;
+
+                dl->_VtxWritePtr[0].pos = temp_points[i * 4 + 0];
+                dl->_VtxWritePtr[0].uv = opaque_uv;
+                dl->_VtxWritePtr[0].col = col_trans0;
+                dl->_VtxWritePtr[1].pos = temp_points[i * 4 + 1];
+                dl->_VtxWritePtr[1].uv = opaque_uv;
+                dl->_VtxWritePtr[1].col = col1;
+                dl->_VtxWritePtr[2].pos = temp_points[i * 4 + 2];
+                dl->_VtxWritePtr[2].uv = opaque_uv;
+                dl->_VtxWritePtr[2].col = col2;
+                dl->_VtxWritePtr[3].pos = temp_points[i * 4 + 3];
+                dl->_VtxWritePtr[3].uv = opaque_uv;
+                dl->_VtxWritePtr[3].col = col_trans3;
+                dl->_VtxWritePtr += 4;
+            }
+        }
+        dl->_VtxCurrentIdx += (ImDrawIdx)vtx_count;
+    }
+    else
+    {
+        // [PATH 4] Non texture-based, Non anti-aliased lines
+        const int idx_count = count * 6;
+        const int vtx_count = count * 4; // FIXME-OPT: Not sharing edges
+        dl->PrimReserve(idx_count, vtx_count);
+
+        for (int i1 = 0; i1 < count; i1++)
+        {
+            const int     i2 = (i1 + 1) == points_count ? 0 : i1 + 1;
+            const ImVec2& p1 = points[i1];
+            const ImVec2& p2 = points[i2];
+
+            float dx = p2.x - p1.x;
+            float dy = p2.y - p1.y;
+            IM_NORMALIZE2F_OVER_ZERO(dx, dy);
+            dx *= (thickness * 0.5f);
+            dy *= (thickness * 0.5f);
+
+            dl->_VtxWritePtr[0].pos.x = p1.x + dy;
+            dl->_VtxWritePtr[0].pos.y = p1.y - dx;
+            dl->_VtxWritePtr[0].uv = opaque_uv;
+            dl->_VtxWritePtr[0].col = rectColor.lerp(min, max, dl->_VtxWritePtr[0].pos);
+            dl->_VtxWritePtr[1].pos.x = p2.x + dy;
+            dl->_VtxWritePtr[1].pos.y = p2.y - dx;
+            dl->_VtxWritePtr[1].uv = opaque_uv;
+            dl->_VtxWritePtr[1].col = rectColor.lerp(min, max, dl->_VtxWritePtr[1].pos);
+            dl->_VtxWritePtr[2].pos.x = p2.x - dy;
+            dl->_VtxWritePtr[2].pos.y = p2.y + dx;
+            dl->_VtxWritePtr[2].uv = opaque_uv;
+            dl->_VtxWritePtr[2].col = rectColor.lerp(min, max, dl->_VtxWritePtr[2].pos);
+            dl->_VtxWritePtr[3].pos.x = p1.x - dy;
+            dl->_VtxWritePtr[3].pos.y = p1.y + dx;
+            dl->_VtxWritePtr[3].uv = opaque_uv;
+            dl->_VtxWritePtr[3].col = rectColor.lerp(min, max, dl->_VtxWritePtr[3].pos);
+            dl->_VtxWritePtr += 4;
+
+            dl->_IdxWritePtr[0] = (ImDrawIdx)(dl->_VtxCurrentIdx);
+            dl->_IdxWritePtr[1] = (ImDrawIdx)(dl->_VtxCurrentIdx + 1);
+            dl->_IdxWritePtr[2] = (ImDrawIdx)(dl->_VtxCurrentIdx + 2);
+            dl->_IdxWritePtr[3] = (ImDrawIdx)(dl->_VtxCurrentIdx);
+            dl->_IdxWritePtr[4] = (ImDrawIdx)(dl->_VtxCurrentIdx + 2);
+            dl->_IdxWritePtr[5] = (ImDrawIdx)(dl->_VtxCurrentIdx + 3);
+            dl->_IdxWritePtr += 6;
+            dl->_VtxCurrentIdx += 4;
+        }
+    }
+}
+
+inline void PathFillConvex(ImDrawList* dl, ImNodeRectColor rectColor, ImVec2 min, ImVec2 max)
+{
+    auto points = dl->_Path.Data;
+    auto points_count = dl->_Path.Size;
+    dl->_Path.Size = 0;
+
+    if (points_count < 3)
+        return;
+
+    const ImVec2 uv = dl->_Data->TexUvWhitePixel;
+
+    if (dl->Flags & ImDrawListFlags_AntiAliasedFill)
+    {
+        // Anti-aliased Fill
+        const float AA_SIZE = dl->_FringeScale;
+        const int   idx_count = (points_count - 2) * 3 + points_count * 6;
+        const int   vtx_count = (points_count * 2);
+        dl->PrimReserve(idx_count, vtx_count);
+
+        // Add indexes for fill
+        unsigned int vtx_inner_idx = dl->_VtxCurrentIdx;
+        unsigned int vtx_outer_idx = dl->_VtxCurrentIdx + 1;
+        for (int i = 2; i < points_count; i++)
+        {
+            dl->_IdxWritePtr[0] = (ImDrawIdx)(vtx_inner_idx);
+            dl->_IdxWritePtr[1] = (ImDrawIdx)(vtx_inner_idx + ((i - 1) << 1));
+            dl->_IdxWritePtr[2] = (ImDrawIdx)(vtx_inner_idx + (i << 1));
+            dl->_IdxWritePtr += 3;
+        }
+
+        // Compute normals
+        dl->_Data->TempBuffer.reserve_discard(points_count);
+        ImVec2* temp_normals = dl->_Data->TempBuffer.Data;
+        for (int i0 = points_count - 1, i1 = 0; i1 < points_count; i0 = i1++)
+        {
+            const ImVec2& p0 = points[i0];
+            const ImVec2& p1 = points[i1];
+            float         dx = p1.x - p0.x;
+            float         dy = p1.y - p0.y;
+            IM_NORMALIZE2F_OVER_ZERO(dx, dy);
+            temp_normals[i0].x = dy;
+            temp_normals[i0].y = -dx;
+        }
+
+        for (int i0 = points_count - 1, i1 = 0; i1 < points_count; i0 = i1++)
+        {
+            // Average normals
+            const ImVec2& n0 = temp_normals[i0];
+            const ImVec2& n1 = temp_normals[i1];
+            float         dm_x = (n0.x + n1.x) * 0.5f;
+            float         dm_y = (n0.y + n1.y) * 0.5f;
+            IM_FIXNORMAL2F(dm_x, dm_y);
+            dm_x *= AA_SIZE * 0.5f;
+            dm_y *= AA_SIZE * 0.5f;
+
+            ImU32       col = rectColor.lerp(min, max, points[i1]);
+            const ImU32 col_trans = col & ~IM_COL32_A_MASK;
+
+            // Add vertices
+            dl->_VtxWritePtr[0].pos.x = (points[i1].x - dm_x);
+            dl->_VtxWritePtr[0].pos.y = (points[i1].y - dm_y);
+            dl->_VtxWritePtr[0].uv = uv;
+            dl->_VtxWritePtr[0].col = col; // Inner
+            dl->_VtxWritePtr[1].pos.x = (points[i1].x + dm_x);
+            dl->_VtxWritePtr[1].pos.y = (points[i1].y + dm_y);
+            dl->_VtxWritePtr[1].uv = uv;
+            dl->_VtxWritePtr[1].col = col_trans; // Outer
+            dl->_VtxWritePtr += 2;
+
+            // Add indexes for fringes
+            dl->_IdxWritePtr[0] = (ImDrawIdx)(vtx_inner_idx + (i1 << 1));
+            dl->_IdxWritePtr[1] = (ImDrawIdx)(vtx_inner_idx + (i0 << 1));
+            dl->_IdxWritePtr[2] = (ImDrawIdx)(vtx_outer_idx + (i0 << 1));
+            dl->_IdxWritePtr[3] = (ImDrawIdx)(vtx_outer_idx + (i0 << 1));
+            dl->_IdxWritePtr[4] = (ImDrawIdx)(vtx_outer_idx + (i1 << 1));
+            dl->_IdxWritePtr[5] = (ImDrawIdx)(vtx_inner_idx + (i1 << 1));
+            dl->_IdxWritePtr += 6;
+        }
+        dl->_VtxCurrentIdx += (ImDrawIdx)vtx_count;
+    }
+    else
+    {
+        // Non Anti-aliased Fill
+        const int idx_count = (points_count - 2) * 3;
+        const int vtx_count = points_count;
+        dl->PrimReserve(idx_count, vtx_count);
+        for (int i = 0; i < vtx_count; i++)
+        {
+            dl->_VtxWritePtr[0].pos = points[i];
+            dl->_VtxWritePtr[0].uv = uv;
+            dl->_VtxWritePtr[0].col = rectColor.lerp(min, max, points[i]);
+            dl->_VtxWritePtr++;
+        }
+        for (int i = 2; i < points_count; i++)
+        {
+            dl->_IdxWritePtr[0] = (ImDrawIdx)(dl->_VtxCurrentIdx);
+            dl->_IdxWritePtr[1] = (ImDrawIdx)(dl->_VtxCurrentIdx + i - 1);
+            dl->_IdxWritePtr[2] = (ImDrawIdx)(dl->_VtxCurrentIdx + i);
+            dl->_IdxWritePtr += 3;
+        }
+        dl->_VtxCurrentIdx += (ImDrawIdx)vtx_count;
+    }
+}
+
 struct QuadOffsets
 {
     ImVec2 TopLeft, BottomLeft, BottomRight, TopRight;
@@ -1529,11 +2025,12 @@ void DrawNode(ImNodesEditorContext& editor, const int node_idx)
     const bool node_hovered =
         GImNodes->HoveredNodeIdx == node_idx &&
         editor.ClickInteraction.Type != ImNodesClickInteractionType_BoxSelection;
+    const bool node_selected = editor.SelectedNodeIndices.contains(node_idx);
 
-    ImU32 node_background = node.ColorStyle.Background;
-    ImU32 titlebar_background = node.ColorStyle.Titlebar;
+    ImU32           node_background = node.ColorStyle.Background;
+    ImNodeRectColor titlebar_background = node.ColorStyle.Titlebar;
 
-    if (editor.SelectedNodeIndices.contains(node_idx))
+    if (node_selected)
     {
         node_background = node.ColorStyle.BackgroundSelected;
         titlebar_background = node.ColorStyle.TitlebarSelected;
@@ -1549,48 +2046,47 @@ void DrawNode(ImNodesEditorContext& editor, const int node_idx)
         GImNodes->CanvasDrawList->AddRectFilled(
             node.Rect.Min, node.Rect.Max, node_background, node.LayoutStyle.CornerRounding);
 
+        ImRect title_bar_rect = GetNodeTitleRect(node);
+        ImRect node_rect = node.Rect;
+
+        auto thick = ImVec2(node.LayoutStyle.BorderThickness, node.LayoutStyle.BorderThickness);
+        node_rect.Min -= thick;
+        node_rect.Max += thick;
+
+
         // title bar:
         if (node.TitleBarContentRect.GetHeight() > 0.f)
         {
-            ImRect title_bar_rect = GetNodeTitleRect(node);
 
-#if IMGUI_VERSION_NUM < 18200
-            GImNodes->CanvasDrawList->AddRectFilled(
+            GImNodes->CanvasDrawList->PathRect(
                 title_bar_rect.Min,
                 title_bar_rect.Max,
-                titlebar_background,
-                node.LayoutStyle.CornerRounding,
-                ImDrawCornerFlags_Top);
-#else
-            GImNodes->CanvasDrawList->AddRectFilled(
-                title_bar_rect.Min,
-                title_bar_rect.Max,
-                titlebar_background,
                 node.LayoutStyle.CornerRounding,
                 ImDrawFlags_RoundCornersTop);
 
-#endif
+            PathFillConvex(
+                GImNodes->CanvasDrawList,
+                titlebar_background,
+                node_rect.Min,
+                node_rect.Max);
         }
 
-        if ((GImNodes->Style.Flags & ImNodesStyleFlags_NodeOutline) != 0)
+        if (node_selected)
         {
-#if IMGUI_VERSION_NUM < 18200
-            GImNodes->CanvasDrawList->AddRect(
-                node.Rect.Min,
-                node.Rect.Max,
-                node.ColorStyle.Outline,
+
+            GImNodes->CanvasDrawList->PathRect(
+                node.Rect.Min + ImVec2(0.50f, 0.50f),
+                node.Rect.Max - ImVec2(0.50f, 0.50f),
                 node.LayoutStyle.CornerRounding,
-                ImDrawCornerFlags_All,
+                ImDrawFlags_RoundCornersAll);
+
+            PathStroke(
+                GImNodes->CanvasDrawList,
+                titlebar_background,
+                node_rect.Min,
+                node_rect.Max,
+                ImDrawFlags_Closed,
                 node.LayoutStyle.BorderThickness);
-#else
-            GImNodes->CanvasDrawList->AddRect(
-                node.Rect.Min,
-                node.Rect.Max,
-                node.ColorStyle.Outline,
-                node.LayoutStyle.CornerRounding,
-                ImDrawFlags_RoundCornersAll,
-                node.LayoutStyle.BorderThickness);
-#endif
         }
     }
 
@@ -2025,8 +2521,7 @@ ImNodesStyle::ImNodesStyle()
       LinkThickness(3.f), LinkLineSegmentsPerLength(0.1f), LinkHoverDistance(10.0f),
       PinCircleRadius(5.0f), PinQuadSideLength(10.0f), PinTriangleSideLength(10.0f),
       PinLineThickness(1.f), PinHoverRadius(10.0f), PinOffset(0.f), MiniMapPadding(8.0f, 8.0f),
-      MiniMapOffset(4.0f, 4.0f), Flags(ImNodesStyleFlags_NodeOutline | ImNodesStyleFlags_GridLines),
-      Colors()
+      MiniMapOffset(4.0f, 4.0f), Flags(ImNodesStyleFlags_GridLines), Colors()
 {
 }
 
@@ -2634,6 +3129,33 @@ void EndNode()
     {
         GImNodes->NodeIndicesOverlappingWithMouse.push_back(GImNodes->CurrentNodeIdx);
     }
+}
+void SetTitleRectColor(ImU32 TopLeft, ImU32 TopRight, ImU32 BottomLeft, ImU32 BottomRight)
+{
+    ImNodesEditorContext& editor = EditorContextGet();
+    ImNodeData&           node = editor.Nodes.Pool[GImNodes->CurrentNodeIdx];
+    node.ColorStyle.Titlebar.TopLeft = TopLeft;
+    node.ColorStyle.Titlebar.TopRight = TopRight;
+    node.ColorStyle.Titlebar.BottomLeft = BottomLeft;
+    node.ColorStyle.Titlebar.BottomRight = BottomRight;
+}
+void SetHoverTitleRectColor(ImU32 TopLeft, ImU32 TopRight, ImU32 BottomLeft, ImU32 BottomRight)
+{
+    ImNodesEditorContext& editor = EditorContextGet();
+    ImNodeData&           node = editor.Nodes.Pool[GImNodes->CurrentNodeIdx];
+    node.ColorStyle.TitlebarHovered.TopLeft = TopLeft;
+    node.ColorStyle.TitlebarHovered.TopRight = TopRight;
+    node.ColorStyle.TitlebarHovered.BottomLeft = BottomLeft;
+    node.ColorStyle.TitlebarHovered.BottomRight = BottomRight;
+}
+void SetSelectedTitleRectColor(ImU32 TopLeft, ImU32 TopRight, ImU32 BottomLeft, ImU32 BottomRight)
+{
+    ImNodesEditorContext& editor = EditorContextGet();
+    ImNodeData&           node = editor.Nodes.Pool[GImNodes->CurrentNodeIdx];
+    node.ColorStyle.TitlebarSelected.TopLeft = TopLeft;
+    node.ColorStyle.TitlebarSelected.TopRight = TopRight;
+    node.ColorStyle.TitlebarSelected.BottomLeft = BottomLeft;
+    node.ColorStyle.TitlebarSelected.BottomRight = BottomRight;
 }
 
 ImVec2 GetNodeDimensions(int node_id)

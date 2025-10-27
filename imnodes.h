@@ -76,7 +76,6 @@ enum ImNodesStyleVar_
 enum ImNodesStyleFlags_
 {
     ImNodesStyleFlags_None = 0,
-    ImNodesStyleFlags_NodeOutline = 1 << 0,
     ImNodesStyleFlags_GridLines = 1 << 2,
     ImNodesStyleFlags_GridLinesPrimary = 1 << 3,
     ImNodesStyleFlags_GridSnapping = 1 << 4
@@ -299,6 +298,10 @@ void PopStyleVar(int count = 1);
 // id can be any positive or negative integer, but INT_MIN is currently reserved for internal use.
 void BeginNode(int id);
 void EndNode();
+
+void SetTitleRectColor(ImU32 TopLeft, ImU32 TopRight, ImU32 BottomLeft, ImU32 BottomRight);
+void SetHoverTitleRectColor(ImU32 TopLeft, ImU32 TopRight, ImU32 BottomLeft, ImU32 BottomRight);
+void SetSelectedTitleRectColor(ImU32 TopLeft, ImU32 TopRight, ImU32 BottomLeft, ImU32 BottomRight);
 
 ImVec2 GetNodeDimensions(int id);
 

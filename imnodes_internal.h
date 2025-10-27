@@ -130,6 +130,41 @@ private:
     int _Index;
 };
 
+struct ImNodeRectColor
+{
+    ImU32 TopLeft;
+    ImU32 TopRight;
+    ImU32 BottomLeft;
+    ImU32 BottomRight;
+
+    inline ImU32 lerp(ImVec2 min, ImVec2 max, ImVec2 p)
+    {
+        float tx = ImClamp((p.x - min.x) / (max.x - min.x), 0.0f, 1.0f);
+        float ty = ImClamp((p.y - min.y) / (max.y - min.y), 0.0f, 1.0f);
+
+        ImVec4 ctl = ImGui::ColorConvertU32ToFloat4(TopLeft);
+        ImVec4 ctr = ImGui::ColorConvertU32ToFloat4(TopRight);
+        ImVec4 cbl = ImGui::ColorConvertU32ToFloat4(BottomLeft);
+        ImVec4 cbr = ImGui::ColorConvertU32ToFloat4(BottomRight);
+        ImVec4 top = ImLerp(ctl, ctr, tx);
+        ImVec4 bot = ImLerp(cbl, cbr, tx);
+        ImVec4 result = ImLerp(top, bot, ty);
+        return ImGui::ColorConvertFloat4ToU32(result);
+    }
+
+    ImNodeRectColor() : TopLeft(0), TopRight(0), BottomLeft(0), BottomRight(0) {}
+
+    ImNodeRectColor(ImU32 color)
+        : TopLeft(color), TopRight(color), BottomLeft(color), BottomRight(color)
+    {
+    }
+
+    ImNodeRectColor(ImU32 top_left, ImU32 top_right, ImU32 bottom_left, ImU32 bottom_right)
+        : TopLeft(top_left), TopRight(top_right), BottomLeft(bottom_left), BottomRight(bottom_right)
+    {
+    }
+};
+
 struct ImNodeData
 {
     int    Id;
@@ -141,8 +176,8 @@ struct ImNodeData
 
     struct
     {
-        ImU32 Background, BackgroundHovered, BackgroundSelected, Outline, Titlebar, TitlebarHovered,
-            TitlebarSelected;
+        ImU32           Background, BackgroundHovered, BackgroundSelected, Outline;
+        ImNodeRectColor Titlebar, TitlebarHovered, TitlebarSelected;
     } ColorStyle;
 
     struct
