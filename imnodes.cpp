@@ -1420,15 +1420,6 @@ ImVec2 GetPinShapeSize(const ImPinData& pin)
         float r = GImNodes->Style.PinCircleRadius;
         return ImVec2(r * 2, r * 2);
     }
-    case ImNodesPinShape_Quad:
-    {
-        return ImVec2(GImNodes->Style.PinQuadSideLength, GImNodes->Style.PinQuadSideLength);
-    }
-    case ImNodesPinShape_QuadFilled:
-    {
-        return ImVec2(GImNodes->Style.PinQuadSideLength, GImNodes->Style.PinQuadSideLength);
-    }
-    break;
     case ImNodesPinShape_Triangle:
     {
         const TriangleOffsets offset =
@@ -1453,7 +1444,7 @@ ImVec2 GetPinShapeSize(const ImPinData& pin)
 
 ImVec2 DrawPinShape(const ImVec2& pin_pos, const ImPinData& pin, const ImU32 pin_color)
 {
-    static const int CIRCLE_NUM_SEGMENTS = 8;
+    static const int CIRCLE_NUM_SEGMENTS = 32;
 
     switch (pin.Shape)
     {
@@ -1477,30 +1468,6 @@ ImVec2 DrawPinShape(const ImVec2& pin_pos, const ImPinData& pin, const ImU32 pin
             pin_color,
             CIRCLE_NUM_SEGMENTS);
         return ImVec2(r * 2, r * 2);
-    }
-    case ImNodesPinShape_Quad:
-    {
-        const QuadOffsets offset = CalculateQuadOffsets(GImNodes->Style.PinQuadSideLength);
-        GImNodes->CanvasDrawList->AddQuad(
-            pin_pos + offset.TopLeft,
-            pin_pos + offset.BottomLeft,
-            pin_pos + offset.BottomRight,
-            pin_pos + offset.TopRight,
-            pin_color,
-            GImNodes->Style.PinLineThickness);
-
-        return ImVec2(GImNodes->Style.PinQuadSideLength, GImNodes->Style.PinQuadSideLength);
-    }
-    case ImNodesPinShape_QuadFilled:
-    {
-        const QuadOffsets offset = CalculateQuadOffsets(GImNodes->Style.PinQuadSideLength);
-        GImNodes->CanvasDrawList->AddQuadFilled(
-            pin_pos + offset.TopLeft,
-            pin_pos + offset.BottomLeft,
-            pin_pos + offset.BottomRight,
-            pin_pos + offset.TopRight,
-            pin_color);
-        return ImVec2(GImNodes->Style.PinQuadSideLength, GImNodes->Style.PinQuadSideLength);
     }
     break;
     case ImNodesPinShape_Triangle:
@@ -2056,8 +2023,8 @@ ImNodesIO::ImNodesIO()
 ImNodesStyle::ImNodesStyle()
     : GridSpacing(24.f), NodeCornerRounding(4.f), NodePadding(8.f, 8.f), NodeBorderThickness(1.f),
       LinkThickness(3.f), LinkLineSegmentsPerLength(0.1f), LinkHoverDistance(10.0f),
-      PinCircleRadius(20.0f), PinQuadSideLength(20.f), PinTriangleSideLength(20.0f),
-      PinLineThickness(1.f), PinHoverRadius(20.0f), PinOffset(0.f), MiniMapPadding(8.0f, 8.0f),
+      PinCircleRadius(5.0f), PinQuadSideLength(10.0f), PinTriangleSideLength(10.0f),
+      PinLineThickness(1.f), PinHoverRadius(10.0f), PinOffset(0.f), MiniMapPadding(8.0f, 8.0f),
       MiniMapOffset(4.0f, 4.0f), Flags(ImNodesStyleFlags_NodeOutline | ImNodesStyleFlags_GridLines),
       Colors()
 {
@@ -2556,6 +2523,20 @@ void EndNodeEditor()
     ImGui::SetCurrentContext(GImNodes->OriginalImgCtx);
     GImNodes->OriginalImgCtx = nullptr;
 
+    auto scale = ImGui::GetStyle().FontScaleMain;
+    ImGui::GetStyle().FontScaleMain = scale * editor.ZoomScale;
+    for (auto& text : editor.DynamicText)
+    {
+        auto screenPos = text.ScreenPosition * editor.ZoomScale;
+        ImGui::SetCursorPos(screenPos);
+        ImGui::PushFont(text.Font, text.FontSize);
+        ImGui::Text("%s", text.Text.c_str());
+        ImGui::PopFont();
+    }
+    ImGui::GetStyle().FontScaleMain = scale;
+
+    editor.DynamicText.clear();
+
     ImGui::EndChild();
     ImGui::EndGroup();
 
@@ -2669,7 +2650,7 @@ void BeginNodeTitleBar()
     IM_ASSERT(GImNodes->CurrentScope == ImNodesScope_Node);
     ImGui::BeginGroup();
     ImGui::ItemAdd(
-        ImRect(ImGui::GetCursorPos(), ImGui::GetCursorPos()), ImGui::GetID("##title_dummy"));
+        ImRect(ImGui::GetCursorPos(), ImGui::GetCursorPos()), ImGui::GetID("##boddy_dummy"));
 }
 
 void EndNodeTitleBar()
@@ -2682,6 +2663,24 @@ void EndNodeTitleBar()
     node.TitleBarContentRect = GetItemRect();
 
     ImGui::SetCursorPos(GridSpaceToEditorSpace(editor, GetNodeContentOrigin(node)));
+}
+
+void BeginNodeBody()
+{
+    IM_ASSERT(GImNodes->CurrentScope == ImNodesScope_Node);
+    ImGui::BeginGroup();
+    ImGui::ItemAdd(
+        ImRect(ImGui::GetCursorPos(), ImGui::GetCursorPos()), ImGui::GetID("##title_dummy"));
+}
+
+void EndNodeBody()
+{
+    IM_ASSERT(GImNodes->CurrentScope == ImNodesScope_Node);
+    ImGui::EndGroup();
+
+    ImNodesEditorContext& editor = EditorContextGet();
+    ImNodeData&           node = editor.Nodes.Pool[GImNodes->CurrentNodeIdx];
+    node.BodyContentRect = GetItemRect();
 }
 
 void SetupInputAttribute(const int id, std::string name, const ImNodesPinShape shape)
@@ -2729,10 +2728,12 @@ void DrawInputAttributes()
 
         window->DC.CursorPos.y = pos.y + center - textSize.y / 2.0f;
 
-        ImGui::Text("%s", pin.Name.c_str());
+        DynamicText(pin.Name);
     }
 
     ImGui::EndGroup();
+
+    node.InputWidth = node.PinIndices.empty() ? 0.0f : ImGui::GetItemRectSize().x;
 }
 
 void DrawOutputAttributes()
@@ -2758,9 +2759,10 @@ void DrawOutputAttributes()
     ImGuiWindow* window = ImGui::GetCurrentWindowRead();
 
     float nodeOriginX = GridSpaceToScreenSpace(editor, node.Origin).x;
-    float currentWidth = window->DC.CursorPos.x - nodeOriginX;
+    float currentWidth = node.BodyContentRect.GetWidth() - maxTextWidth;
     float titleWidth = node.TitleBarContentRect.GetWidth() - maxTextWidth;
-    float originX = nodeOriginX + std::max(currentWidth, titleWidth);
+    float originX = nodeOriginX + node.InputWidth + ImGui::GetStyle().ItemSpacing.x +
+                    std::max(currentWidth, titleWidth);
 
     for (int pinIndex : node.PinIndices)
     {
@@ -2791,7 +2793,7 @@ void DrawOutputAttributes()
         window->DC.CursorPos = textPos;
         window->DC.IsSetPos = true;
 
-        ImGui::Text("%s", pin.Name.c_str());
+        DynamicText(pin.Name);
         ImGui::SameLine();
         ImGui::Dummy(ImVec2(shapeSize.x, center * 2 + ImGui::GetStyle().ItemSpacing.y));
     }
@@ -3004,6 +3006,18 @@ void SetNodeDraggable(const int node_id, const bool draggable)
     ImNodesEditorContext& editor = EditorContextGet();
     ImNodeData&           node = ObjectPoolFindOrCreateObject(editor.Nodes, node_id);
     node.Draggable = draggable;
+}
+void DynamicText(std::string text)
+{
+    ImVec2 textSize = ImGui::CalcTextSize(text.c_str());
+    EditorContextGet().DynamicText.emplace_back(
+        ImNodesDynamicText{
+            ImGui::GetCursorScreenPos(),
+            std::move(text),
+            ImGui::GetFont(),
+            ImGui::GetFontSize(),
+        });
+    ImGui::Dummy(textSize);
 }
 
 ImVec2 GetNodeScreenSpacePos(const int node_id)

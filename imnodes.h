@@ -88,8 +88,6 @@ enum ImNodesPinShape_
     ImNodesPinShape_CircleFilled,
     ImNodesPinShape_Triangle,
     ImNodesPinShape_TriangleFilled,
-    ImNodesPinShape_Quad,
-    ImNodesPinShape_QuadFilled
 };
 
 // This enum controls the way the attribute pins behave.
@@ -310,6 +308,9 @@ ImVec2 GetNodeDimensions(int id);
 void BeginNodeTitleBar();
 void EndNodeTitleBar();
 
+void BeginNodeBody();
+void EndNodeBody();
+
 // Attributes are ImGui UI elements embedded within the node. Attributes can have pin shapes
 // rendered next to them. Links are created between pins.
 //
@@ -351,6 +352,9 @@ void Link(int id, int start_attribute_id, int end_attribute_id);
 
 // Enable or disable the ability to click and drag a specific node.
 void SetNodeDraggable(int node_id, const bool draggable);
+
+// Prints a text sensitive to the editor's zoom scale.
+void DynamicText(std::string text);
 
 // The node's position can be expressed in three coordinate systems:
 // * screen space coordinates, -- the origin is the upper left corner of the window.

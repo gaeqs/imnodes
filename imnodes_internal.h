@@ -8,6 +8,7 @@
 
 #include <limits.h>
 #include <string>
+#include <vector>
 
 // the structure of this file:
 //
@@ -134,7 +135,9 @@ struct ImNodeData
     int    Id;
     ImVec2 Origin; // The node origin is in editor space
     ImRect TitleBarContentRect;
+    ImRect BodyContentRect;
     ImRect Rect;
+    float  InputWidth;
 
     struct
     {
@@ -153,9 +156,8 @@ struct ImNodeData
     bool          Draggable;
 
     ImNodeData(const int node_id)
-        : Id(node_id), Origin(0.0f, 0.0f), TitleBarContentRect(),
-          Rect(ImVec2(0.0f, 0.0f), ImVec2(0.0f, 0.0f)), ColorStyle(), LayoutStyle(), PinIndices(),
-          Draggable(true)
+        : Id(node_id), Origin(0.0f, 0.0f), Rect(ImVec2(0.0f, 0.0f), ImVec2(0.0f, 0.0f)),
+          InputWidth(0.0f), ColorStyle(), LayoutStyle(), Draggable(true)
     {
     }
 
@@ -181,8 +183,7 @@ struct ImPinData
 
     ImPinData(const int pin_id)
         : Id(pin_id), ParentNodeIdx(), AttributeRect(), Type(ImNodesAttributeType_None),
-          Shape(ImNodesPinShape_CircleFilled), Pos(), Flags(ImNodesAttributeFlags_None),
-          ColorStyle()
+          Shape(ImNodesPinShape_Circle), Pos(), Flags(ImNodesAttributeFlags_None), ColorStyle()
     {
     }
 
@@ -246,13 +247,22 @@ struct ImNodesStyleVarElement
     }
 };
 
+struct ImNodesDynamicText
+{
+    ImVec2      ScreenPosition;
+    std::string Text;
+    ImFont*     Font;
+    float       FontSize;
+};
+
 // [SECTION] global and editor context structs
 
 struct ImNodesEditorContext
 {
-    ImObjectPool<ImNodeData> Nodes;
-    ImObjectPool<ImPinData>  Pins;
-    ImObjectPool<ImLinkData> Links;
+    ImObjectPool<ImNodeData>        Nodes;
+    ImObjectPool<ImPinData>         Pins;
+    ImObjectPool<ImLinkData>        Links;
+    std::vector<ImNodesDynamicText> DynamicText;
 
     ImVector<int> NodeDepthOrder;
 
