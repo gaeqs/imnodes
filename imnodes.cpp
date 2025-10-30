@@ -1137,7 +1137,7 @@ ImOptionalIndex ResolveHoveredPin(
 
     const float hover_radius_sqr = GImNodes->Style.PinHoverRadius * GImNodes->Style.PinHoverRadius;
 
-    for (int idx = 0; idx < pins.Pool.Size; ++idx)
+    for (int idx = 0; idx < pins.Pool.size(); ++idx)
     {
         if (!pins.InUse[idx])
         {
@@ -1213,7 +1213,7 @@ ImOptionalIndex ResolveHoveredLink(
     // The latter is a requirement for link detaching with drag click to work, as both a link and
     // pin are required to be hovered over for the feature to work.
 
-    for (int idx = 0; idx < links.Pool.Size; ++idx)
+    for (int idx = 0; idx < links.Pool.size(); ++idx)
     {
         if (!links.InUse[idx])
         {

@@ -60,8 +60,6 @@ if(MSVC)
     else()
         add_compile_options(/W4)
     endif()
-else()
-    add_compile_options(-Wall -Wextra -Wpedantic -Werror)
 endif()
 
 # Imnodes
